@@ -21,6 +21,7 @@ jobs:
 
     - name: Create and Run Build Script
       # 更新：脚本现在包含编译 OpenSSL, libcurl (with SSL), 和 llama.cpp 的步骤
+      # 更新：修正了 OpenSSL 配置的环境变量设置
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -36,21 +37,16 @@ jobs:
         ANDROID_API_LEVEL="28" # 选择一个统一的 API Level
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
         LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
-        # OpenSSL 需要架构名映射
         OPENSSL_ARCH="android-arm64" # aarch64 -> android-arm64 for OpenSSL Configure
 
         DEV_DIR="$HOME/dev/llm"
         DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # OpenSSL 和 libcurl 都将安装到这里
 
-        # 设置 NDK 工具链路径到 PATH，OpenSSL 配置脚本会用到
-        export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-
         # --- 环境检查 ---
-        # (省略...)
+        # (此处省略之前的环境检查: wget, unzip, git, cmake, ninja)
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
-        # (代码与之前版本相同, 此处省略以保持简洁)
         if [ ! -d "$NDK_PATH" ]; then
             mkdir -p "$NDK_BASE_PATH/cmdline-tools"
             cd "$HOME" || exit 1
@@ -69,7 +65,6 @@ jobs:
 
         # --- 步骤 2: 准备 OpenCL 文件 ---
         echo ">>> 步骤 2: 准备 OpenCL 文件..."
-        # (代码与之前版本相同, 此处省略以保持简洁)
         mkdir -p "$DEV_DIR"
         cd "$DEV_DIR" || exit 1
         OPENCL_HEADERS_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
@@ -108,12 +103,28 @@ jobs:
         mkdir -p "$DEPS_INSTALL_DIR" # 确保安装目录存在
         cd "$DEV_DIR" || exit 1
         if [ ! -d "openssl" ]; then
-            # 克隆 OpenSSL 源码 (建议使用稳定版本，例如 openssl-3.0 LTS 或 1.1.1)
-            git clone --depth 1 --branch openssl-3.0.13 https://github.com/openssl/openssl.git # 使用 OpenSSL 3.0.13 LTS
+            git clone --depth 1 --branch openssl-3.0.13 https://github.com/openssl/openssl.git
         fi
         cd openssl || exit 1
-        # 配置 OpenSSL for Android ARM64
-        # 使用 NDK 环境变量, 指定 API Level, no-shared 表示静态库
+
+        # --- 设置 OpenSSL 交叉编译环境变量 ---
+        echo ">>> 设置 OpenSSL 交叉编译环境变量..."
+        export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+        export TARGET=aarch64-linux-android # Target triplet
+        # ANDROID_API_LEVEL is already set above
+        # ANDROID_NDK_HOME is already set above
+
+        # 设置编译器、链接器、归档器等工具路径
+        export AR=$TOOLCHAIN/bin/llvm-ar
+        export AS=$TOOLCHAIN/bin/llvm-as
+        export CC=$TOOLCHAIN/bin/${TARGET}${ANDROID_API_LEVEL}-clang
+        export CXX=$TOOLCHAIN/bin/${TARGET}${ANDROID_API_LEVEL}-clang++
+        export LD=$TOOLCHAIN/bin/ld
+        export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+        export STRIP=$TOOLCHAIN/bin/llvm-strip
+
+        echo ">>> 配置 OpenSSL for ${OPENSSL_ARCH} API ${ANDROID_API_LEVEL}..."
+        # ./Configure 会使用上面设置的 CC, AR 等环境变量
         ./Configure ${OPENSSL_ARCH} \
             -D__ANDROID_API__=${ANDROID_API_LEVEL} \
             no-shared \
@@ -124,7 +135,6 @@ jobs:
         echo ">>> 开始编译 OpenSSL for Android..."
         make -j$(nproc) || { echo "OpenSSL 编译失败"; exit 1; }
         echo ">>> 开始安装 OpenSSL for Android 到 $DEPS_INSTALL_DIR ..."
-        # 使用 install_sw 只安装库和头文件，不安装文档等
         make install_sw || { echo "OpenSSL 安装失败"; exit 1; }
         echo ">>> OpenSSL for Android 编译安装完成。"
         cd "$DEV_DIR" || exit 1 # 返回开发目录
@@ -137,8 +147,7 @@ jobs:
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
         fi
         cd curl || exit 1
-        # 清理之前的构建目录（如果存在）
-        if [ -d "build-android" ]; then rm -rf build-android; fi
+        if [ -d "build-android" ]; then rm -rf build-android; fi # 清理旧目录
         mkdir -p build-android && cd build-android || exit 1
         # 配置 CMake for libcurl (交叉编译, 使用自编译的 OpenSSL)
         cmake .. -G Ninja \
@@ -153,10 +162,10 @@ jobs:
           -DBUILD_CURL_EXE=OFF \
           -DBUILD_TESTING=OFF \
           -DENABLE_MANUAL=OFF \
-          -DCURL_USE_OPENSSL=ON `# 启用 OpenSSL` \
-          -DOPENSSL_ROOT_DIR="$DEPS_INSTALL_DIR" `# 指向 OpenSSL 安装目录` \
-          -DOPENSSL_USE_STATIC_LIBS=ON `# 确保链接静态 OpenSSL 库` \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-in-shared-libs" `# 可能需要避免某些链接错误`
+          -DCURL_USE_OPENSSL=ON \
+          -DOPENSSL_ROOT_DIR="$DEPS_INSTALL_DIR" \
+          -DOPENSSL_USE_STATIC_LIBS=ON \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-in-shared-libs"
 
         echo ">>> 开始编译 libcurl (with OpenSSL) for Android..."
         ninja || { echo "libcurl 编译失败"; exit 1; }
