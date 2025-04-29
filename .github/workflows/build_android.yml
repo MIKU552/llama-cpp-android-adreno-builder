@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go
 
     - name: Create and Run Build Script
-      # 更新：修正了 BoringSSL 手动安装的 cp 路径
+      # 更新：为 libcurl 的 CMake 添加 OPENSSL_ROOT_DIR 尝试
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -114,17 +114,14 @@ jobs:
           -DBUILD_SHARED_LIBS=OFF
 
         echo ">>> 开始编译 BoringSSL for Android (指定目标)..."
-        # 仍然使用明确目标 crypto ssl, 但移除 -v
         ninja crypto ssl || { echo "BoringSSL 编译失败"; exit 1; }
 
         # 手动安装 BoringSSL (修正路径)
         echo ">>> 手动安装 BoringSSL 到 $DEPS_INSTALL_DIR ..."
         mkdir -p "$DEPS_INSTALL_DIR/lib"
         mkdir -p "$DEPS_INSTALL_DIR/include"
-        # 从当前构建目录 (.) 复制库文件
         cp libcrypto.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libcrypto.a 失败"; exit 1; }
         cp libssl.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libssl.a 失败"; exit 1; }
-        # include 目录路径保持不变
         cp -R ../include/openssl "$DEPS_INSTALL_DIR/include/" || { echo "复制 include/openssl 失败"; exit 1; }
         echo ">>> BoringSSL for Android '安装' 完成。"
         cd "$DEV_DIR" || exit 1
@@ -132,7 +129,6 @@ jobs:
 
         # --- 修改步骤: 交叉编译 libcurl for Android (with BoringSSL) ---
         echo ">>> 修改步骤: 交叉编译 libcurl for Android (with BoringSSL)..."
-        # (代码与之前版本相同)
         cd "$DEV_DIR" || exit 1
         if [ ! -d "curl" ]; then
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
@@ -140,6 +136,7 @@ jobs:
         cd curl || exit 1
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
+        # 配置 CMake for libcurl (尝试使用 OPENSSL_ROOT_DIR 指向 BoringSSL)
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -153,7 +150,8 @@ jobs:
           -DCURL_DISABLE_LDAPS=ON \
           -DENABLE_MANUAL=OFF \
           -DCURL_CA_PATH=/system/etc/security/cacerts \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
+          -DOPENSSL_ROOT_DIR="$DEPS_INSTALL_DIR" # <-- 新增：尝试指定 ROOT_DIR
 
         echo ">>> 开始编译 libcurl (with BoringSSL) for Android..."
         ninja || { echo "libcurl 编译失败"; exit 1; }
