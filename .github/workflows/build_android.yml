@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go autoconf automake libtool make build-essential
 
     - name: Create and Run Build Script
-      # 更新：为 libcurl 的 configure 添加 LDFLAGS 和 LIBS 环境变量
+      # 更新：修正了 libcurl configure 的环境变量 (CPPFLAGS)
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -135,7 +135,7 @@ jobs:
         fi
         cd curl || exit 1
 
-        # --- 设置 Autotools 交叉编译环境变量 (添加 LDFLAGS 和 LIBS) ---
+        # --- 设置 Autotools 交叉编译环境变量 (修正 CPPFLAGS, 简化 LDFLAGS/LIBS) ---
         echo ">>> 设置 libcurl (Autotools) 交叉编译环境变量..."
         export TOOLCHAIN_BIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
         export SYSROOT=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
@@ -146,19 +146,20 @@ jobs:
         export LD="${TOOLCHAIN_BIN}/ld"
         export RANLIB="${TOOLCHAIN_BIN}/llvm-ranlib"
         export STRIP="${TOOLCHAIN_BIN}/llvm-strip"
-        # CFLAGS CXXFLAGS 添加 -I 指向 BoringSSL 头文件
-        export CFLAGS="--sysroot=$SYSROOT -I${DEPS_INSTALL_DIR}/include -O2 -fPIC"
-        export CXXFLAGS="--sysroot=$SYSROOT -I${DEPS_INSTALL_DIR}/include -O2 -fPIC"
-        # LDFLAGS 添加 -L 指向 BoringSSL 库文件
-        export LDFLAGS="-L${DEPS_INSTALL_DIR}/lib --sysroot=$SYSROOT"
-        # LIBS 明确指定需要链接的库
-        export LIBS="-lssl -lcrypto"
+        # 将 -I 移到 CPPFLAGS
+        export CPPFLAGS="-I${DEPS_INSTALL_DIR}/include"
+        export CFLAGS="--sysroot=$SYSROOT -O2 -fPIC"
+        export CXXFLAGS="--sysroot=$SYSROOT -O2 -fPIC"
+        # 简化 LDFLAGS, 暂时移除 LIBS
+        export LDFLAGS="--sysroot=$SYSROOT"
+        unset LIBS # 确保 LIBS 为空或未设置
         export PKG_CONFIG_PATH="$DEPS_INSTALL_DIR/lib/pkgconfig"
         # --- 环境变量设置结束 ---
 
         echo ">>> 运行 libcurl 的 ./configure..."
         ./buildconf --force
 
+        # configure 命令保持不变
         ./configure --host="$HOST_TRIPLET" \
             --prefix="$DEPS_INSTALL_DIR" \
             --with-ssl="$DEPS_INSTALL_DIR" \
