@@ -16,11 +16,10 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        # BoringSSL 需要 Go, 其他保持不变 (移除 perl, make, build-essential)
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go
 
     - name: Create and Run Build Script
-      # 更新：包含编译 BoringSSL, libcurl (with BoringSSL), 和 llama.cpp 的步骤
+      # 更新：修正了 BoringSSL 的 ninja 编译命令
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -36,13 +35,14 @@ jobs:
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
         LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
-        BORINGSSL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}" # CMake 使用数字
+        BORINGSSL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
 
         DEV_DIR="$HOME/dev/llm"
-        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # BoringSSL 和 libcurl 都将安装到这里
+        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android"
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
+        # (代码与之前版本相同, 此处省略)
         if [ ! -d "$NDK_PATH" ]; then
             mkdir -p "$NDK_BASE_PATH/cmdline-tools"
             cd "$HOME" || exit 1
@@ -97,40 +97,42 @@ jobs:
 
         # --- 新增步骤: 交叉编译 BoringSSL for Android ---
         echo ">>> 新增步骤: 交叉编译 BoringSSL for Android..."
-        mkdir -p "$DEPS_INSTALL_DIR" # 确保安装目录存在
+        mkdir -p "$DEPS_INSTALL_DIR"
         cd "$DEV_DIR" || exit 1
         if [ ! -d "boringssl" ]; then
-            # 克隆 BoringSSL 源码
             git clone https://boringssl.googlesource.com/boringssl
         fi
         cd boringssl || exit 1
-        # 清理可能存在的旧构建目录
         if [ -d "build" ]; then rm -rf build; fi
         mkdir build && cd build || exit 1
-        # 配置 CMake for BoringSSL (交叉编译)
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
           -DANDROID_PLATFORM="$BORINGSSL_ANDROID_PLATFORM" \
           -DCMAKE_INSTALL_PREFIX="$DEPS_INSTALL_DIR" \
           -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_SHARED_LIBS=OFF # 构建静态库
+          -DBUILD_SHARED_LIBS=OFF
 
         echo ">>> 开始编译 BoringSSL for Android..."
-        ninja crypto ssl || { echo "BoringSSL 编译失败 (crypto, ssl)"; exit 1; }
-        # BoringSSL 没有标准的 'install' 目标, 需要手动复制
+        # 使用 'ninja' 而不是 'ninja crypto ssl'
+        ninja || { echo "BoringSSL 编译失败"; exit 1; }
+
+        # 手动安装 BoringSSL (路径保持不变)
         echo ">>> 手动安装 BoringSSL 到 $DEPS_INSTALL_DIR ..."
         mkdir -p "$DEPS_INSTALL_DIR/lib"
         mkdir -p "$DEPS_INSTALL_DIR/include"
-        cp crypto/libcrypto.a "$DEPS_INSTALL_DIR/lib/"
-        cp ssl/libssl.a "$DEPS_INSTALL_DIR/lib/"
-        cp -R ../include/openssl "$DEPS_INSTALL_DIR/include/" # 复制 include/openssl 目录
+        # 这里的路径 crypto/ 和 ssl/ 是相对于 build 目录的
+        cp crypto/libcrypto.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libcrypto.a 失败"; exit 1; }
+        cp ssl/libssl.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libssl.a 失败"; exit 1; }
+        # include 目录是在源码树的顶层
+        cp -R ../include/openssl "$DEPS_INSTALL_DIR/include/" || { echo "复制 include/openssl 失败"; exit 1; }
         echo ">>> BoringSSL for Android '安装' 完成。"
-        cd "$DEV_DIR" || exit 1 # 返回开发目录
+        cd "$DEV_DIR" || exit 1
 
 
         # --- 修改步骤: 交叉编译 libcurl for Android (with BoringSSL) ---
         echo ">>> 修改步骤: 交叉编译 libcurl for Android (with BoringSSL)..."
+        # (代码与之前版本相同)
         cd "$DEV_DIR" || exit 1
         if [ ! -d "curl" ]; then
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
@@ -138,8 +140,6 @@ jobs:
         cd curl || exit 1
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
-        # 配置 CMake for libcurl (交叉编译, 使用自编译的 BoringSSL)
-        # 移除 OpenSSL 相关 flags, 使用 CMAKE_PREFIX_PATH
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -152,9 +152,8 @@ jobs:
           -DCURL_DISABLE_LDAP=ON \
           -DCURL_DISABLE_LDAPS=ON \
           -DENABLE_MANUAL=OFF \
-          -DCURL_CA_PATH=/system/etc/security/cacerts `# 使用 Android 系统 CA 证书` \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" # <--- 告诉 CMake 在这里找 BoringSSL
-          # -DCURL_USE_OPENSSL=ON # 不确定是否需要为 BoringSSL 显式设置这个，先去掉试试
+          -DCURL_CA_PATH=/system/etc/security/cacerts \
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
 
         echo ">>> 开始编译 libcurl (with BoringSSL) for Android..."
         ninja || { echo "libcurl 编译失败"; exit 1; }
@@ -184,7 +183,7 @@ jobs:
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" # <--- 告诉 CMake 在这里找依赖
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
@@ -204,7 +203,6 @@ jobs:
       run: |
         TODAY=$(date +%Y-%m-%d)
         echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
-        # 更新文件名，反映 BoringSSL
         ARTIFACT_NAME="llama-android-opencl-boringssl-${TODAY}"
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
@@ -216,11 +214,8 @@ jobs:
     - name: Create or Update GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        # 更新标签名
         tag_name: daily-android-opencl-adreno-boringssl
-        # 更新 Release 名称
         name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL + BoringSSL) - ${{ env.TODAY_DATE }}"
-        # 更新 Release Body
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
