@@ -78,7 +78,9 @@ chmod +x llama-cli llama-server llama-quantize llama-embedding
 # 运行指定的程序，例如 'llama-cli' 进行推理
 # 请确保将 <模型文件路径> 替换为模型在设备上的实际路径
 # 并根据需要添加其他参数 (如 -ngl 层数等)
-./llama-cli -m <模型文件路径> [其他参数...]
+LD_LIBRARY_PATH=LD_LIBRARY_PATH=/vendor/lib64:$LD_LIBRARY_PATH ./llama-cli -m <模型文件路径> [其他参数...]
 
 # 或者运行 'llama-server' 启动服务
-# ./llama-server -m <模型文件路径> -c 2048 [其他服务器参数...]
+# LD_LIBRARY_PATH=LD_LIBRARY_PATH=/vendor/lib64:$LD_LIBRARY_PATH ./llama-server -m <模型文件路径> -c 2048 [其他服务器参数...]
+```
+同样的，可以使用Termux直接在手机上运行，方法大同小异不再过多赘述
