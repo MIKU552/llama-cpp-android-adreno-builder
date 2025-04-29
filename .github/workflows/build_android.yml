@@ -178,6 +178,8 @@ jobs:
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
 
+        MBEDTLS_LINK_FLAGS="-L${DEPS_INSTALL_DIR}/lib -lmbedtls -lmbedx509 -lmbedcrypto -ldl"
+        
         echo ">>> 配置 CMake for llama.cpp (使用自编译的依赖)..."
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
@@ -187,6 +189,8 @@ jobs:
           -DGGML_OPENCL=ON \
           -DCURL_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" \
           -DCURL_LIBRARY="$DEPS_INSTALL_DIR/lib/libcurl.a" \
+          -DCMAKE_EXE_LINKER_FLAGS="${MBEDTLS_LINK_FLAGS}" \
+          -DCMAKE_SHARED_LINKER_FLAGS="${MBEDTLS_LINK_FLAGS}" \
           -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
 
         echo ">>> 开始编译 llama.cpp..."
