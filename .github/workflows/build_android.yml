@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go
 
     - name: Create and Run Build Script
-      # 更新：修正了 BoringSSL 的 ninja 编译命令
+      # 更新：在 BoringSSL 编译后添加 ls 命令用于调试
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -114,17 +114,21 @@ jobs:
           -DBUILD_SHARED_LIBS=OFF
 
         echo ">>> 开始编译 BoringSSL for Android..."
-        # 使用 'ninja' 而不是 'ninja crypto ssl'
         ninja || { echo "BoringSSL 编译失败"; exit 1; }
 
-        # 手动安装 BoringSSL (路径保持不变)
+        # --- 新增: 列出构建目录内容用于调试 ---
+        echo "--- Listing BoringSSL build directory contents (inside build/) ---"
+        ls -lR .
+        echo "--- End of BoringSSL build directory listing ---"
+        # --- 调试步骤结束 ---
+
+        # 手动安装 BoringSSL
         echo ">>> 手动安装 BoringSSL 到 $DEPS_INSTALL_DIR ..."
         mkdir -p "$DEPS_INSTALL_DIR/lib"
         mkdir -p "$DEPS_INSTALL_DIR/include"
-        # 这里的路径 crypto/ 和 ssl/ 是相对于 build 目录的
+        # 这里的路径 crypto/ 和 ssl/ 是相对于 build 目录的, 我们需要确认它们是否存在
         cp crypto/libcrypto.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libcrypto.a 失败"; exit 1; }
         cp ssl/libssl.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libssl.a 失败"; exit 1; }
-        # include 目录是在源码树的顶层
         cp -R ../include/openssl "$DEPS_INSTALL_DIR/include/" || { echo "复制 include/openssl 失败"; exit 1; }
         echo ">>> BoringSSL for Android '安装' 完成。"
         cd "$DEV_DIR" || exit 1
@@ -200,6 +204,7 @@ jobs:
         $HOME/build_android_opencl.sh
 
     - name: Package Binaries
+      # (代码与之前版本相同)
       run: |
         TODAY=$(date +%Y-%m-%d)
         echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
@@ -212,6 +217,7 @@ jobs:
         echo "ARTIFACT_ZIP_NAME=${ARTIFACT_NAME}.zip" >> $GITHUB_ENV
 
     - name: Create or Update GitHub Release
+      # (代码与之前版本相同)
       uses: softprops/action-gh-release@v2
       with:
         tag_name: daily-android-opencl-adreno-boringssl
