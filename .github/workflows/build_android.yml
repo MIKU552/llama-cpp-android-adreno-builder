@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go
 
     - name: Create and Run Build Script
-      # 更新：使用明确的 ninja 目标并添加 -v 详细输出
+      # 更新：修正了 BoringSSL 手动安装的 cp 路径
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -105,7 +105,6 @@ jobs:
         cd boringssl || exit 1
         if [ -d "build" ]; then rm -rf build; fi
         mkdir build && cd build || exit 1
-        # BoringSSL CMake 配置保持不变
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -114,21 +113,18 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DBUILD_SHARED_LIBS=OFF
 
-        echo ">>> 开始编译 BoringSSL for Android (指定目标并启用详细输出)..."
-        # 明确指定 crypto 和 ssl 目标, 并添加 -v
-        ninja -v crypto ssl || { echo "BoringSSL 编译失败"; exit 1; }
+        echo ">>> 开始编译 BoringSSL for Android (指定目标)..."
+        # 仍然使用明确目标 crypto ssl, 但移除 -v
+        ninja crypto ssl || { echo "BoringSSL 编译失败"; exit 1; }
 
-        # 不再需要 ls 调试命令
-        # echo "--- Listing BoringSSL build directory contents (inside build/) ---"
-        # ls -lR .
-        # echo "--- End of BoringSSL build directory listing ---"
-
-        # 手动安装 BoringSSL (路径保持不变，依赖 ninja crypto ssl 成功)
+        # 手动安装 BoringSSL (修正路径)
         echo ">>> 手动安装 BoringSSL 到 $DEPS_INSTALL_DIR ..."
         mkdir -p "$DEPS_INSTALL_DIR/lib"
         mkdir -p "$DEPS_INSTALL_DIR/include"
-        cp crypto/libcrypto.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libcrypto.a 失败"; exit 1; }
-        cp ssl/libssl.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libssl.a 失败"; exit 1; }
+        # 从当前构建目录 (.) 复制库文件
+        cp libcrypto.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libcrypto.a 失败"; exit 1; }
+        cp libssl.a "$DEPS_INSTALL_DIR/lib/" || { echo "复制 libssl.a 失败"; exit 1; }
+        # include 目录路径保持不变
         cp -R ../include/openssl "$DEPS_INSTALL_DIR/include/" || { echo "复制 include/openssl 失败"; exit 1; }
         echo ">>> BoringSSL for Android '安装' 完成。"
         cd "$DEV_DIR" || exit 1
