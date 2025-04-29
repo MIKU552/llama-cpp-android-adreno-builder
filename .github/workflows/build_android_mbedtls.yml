@@ -187,8 +187,7 @@ jobs:
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_C_FLAGS="-fopenmp -static-openmp" \
-          -DCMAKE_CXX_FLAGS="-fopenmp -static-openmp" \
+          -DCMAKE_EXE_LINKER_FLAGS="-static-openmp" \
           -DCURL_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" \
           -DCURL_LIBRARY="$DEPS_INSTALL_DIR/lib/libcurl.a" \
           -DCMAKE_EXE_LINKER_FLAGS="${MBEDTLS_LINK_FLAGS}" \
