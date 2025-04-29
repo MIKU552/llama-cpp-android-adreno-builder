@@ -16,12 +16,10 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        # mbed TLS 不需要 Go, 但可能需要 Python (其某些脚本可能需要)
-        # 保留 pkg-config
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config python3 make build-essential
 
     - name: Create and Run Build Script
-      # 更新：SSL 后端替换为 mbedTLS
+      # 更新：为 mbedTLS 添加更多 git submodule 调试步骤
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -37,10 +35,10 @@ jobs:
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
         LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
-        MBEDTLS_ANDROID_PLATFORM="${ANDROID_API_LEVEL}" # CMake 使用数字
+        MBEDTLS_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
 
         DEV_DIR="$HOME/dev/llm"
-        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # mbedTLS 和 libcurl 都将安装到这里
+        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android"
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
@@ -99,17 +97,29 @@ jobs:
 
         # --- 步骤 3: 交叉编译 mbed TLS for Android ---
         echo ">>> 步骤 3: 交叉编译 mbed TLS for Android..."
-        mkdir -p "$DEPS_INSTALL_DIR" # 确保安装目录存在
+        mkdir -p "$DEPS_INSTALL_DIR"
         cd "$DEV_DIR" || exit 1
         if [ ! -d "mbedtls" ]; then
-            # 克隆 mbed TLS 源码 (建议使用一个 LTS 或稳定版本 tag)
-            git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls.git # 使用 v3.6.0 LTS
+            git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls.git
         fi
         cd mbedtls || exit 1
-        # 清理可能存在的旧构建目录
+
+        # --- 新增：子模块更新调试 ---
+        echo ">>> 检查 mbedTLS 子模块..."
+        echo "--- Checking .gitmodules ---"
+        ls -l .gitmodules || echo ".gitmodules not found!"
+        echo ">>> 初始化 mbedTLS 子模块..."
+        git submodule update --init --recursive || { echo "mbedTLS 子模块更新失败"; exit 1; }
+        echo ">>> 检查子模块状态..."
+        git submodule status || echo "无法获取子模块状态"
+        echo ">>> 列出当前目录内容以确认 framework 目录..."
+        ls -l
+        echo ">>> 子模块检查/更新完成。"
+        # --- 子模块调试结束 ---
+
         if [ -d "build" ]; then rm -rf build; fi
         mkdir build && cd build || exit 1
-        # 配置 CMake for mbed TLS (交叉编译)
+        # 配置 CMake for mbed TLS
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -118,12 +128,11 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DENABLE_TESTING=OFF \
           -DENABLE_PROGRAMS=OFF \
-          -DUSE_SHARED_MBEDTLS_LIBRARY=OFF # 构建静态库
+          -DUSE_SHARED_MBEDTLS_LIBRARY=OFF
 
         echo ">>> 开始编译 mbed TLS for Android..."
         ninja || { echo "mbed TLS 编译失败"; exit 1; }
         echo ">>> 开始安装 mbed TLS for Android 到 $DEPS_INSTALL_DIR ..."
-        # mbedTLS 使用标准的 ninja install
         ninja install || { echo "mbed TLS 安装失败"; exit 1; }
         echo ">>> mbed TLS for Android 编译安装完成。"
         cd "$DEV_DIR" || exit 1
@@ -131,6 +140,7 @@ jobs:
 
         # --- 步骤 4: 交叉编译 libcurl for Android (with mbed TLS) ---
         echo ">>> 步骤 4: 交叉编译 libcurl for Android (with mbed TLS)..."
+        # (代码与之前版本相同)
         cd "$DEV_DIR" || exit 1
         if [ ! -d "curl" ]; then
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
@@ -138,7 +148,6 @@ jobs:
         cd curl || exit 1
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
-        # 配置 CMake for libcurl (尝试使用 mbed TLS)
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -153,7 +162,7 @@ jobs:
           -DENABLE_MANUAL=OFF \
           -DCURL_CA_PATH=/system/etc/security/cacerts \
           -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
-          -DCURL_USE_MBEDTLS=ON # <--- 尝试显式启用 mbedTLS (如果此标志无效，CMake 会报错)
+          -DCURL_USE_MBEDTLS=ON
 
         echo ">>> 开始编译 libcurl (with mbed TLS) for Android..."
         ninja || { echo "libcurl 编译失败"; exit 1; }
@@ -204,7 +213,6 @@ jobs:
       run: |
         TODAY=$(date +%Y-%m-%d)
         echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
-        # 更新文件名
         ARTIFACT_NAME="llama-android-opencl-mbedtls-${TODAY}"
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
@@ -217,11 +225,8 @@ jobs:
       # (代码与之前版本相同)
       uses: softprops/action-gh-release@v2
       with:
-        # 更新标签名
         tag_name: daily-android-opencl-adreno-mbedtls
-        # 更新 Release 名称
         name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL + mbedTLS) - ${{ env.TODAY_DATE }}"
-        # 更新 Release Body
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
