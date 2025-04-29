@@ -83,4 +83,4 @@ LD_LIBRARY_PATH=LD_LIBRARY_PATH=/vendor/lib64:$LD_LIBRARY_PATH ./llama-cli -m <�
 # 或者运行 'llama-server' 启动服务
 # LD_LIBRARY_PATH=LD_LIBRARY_PATH=/vendor/lib64:$LD_LIBRARY_PATH ./llama-server -m <模型文件路径> -c 2048 [其他服务器参数...]
 ```
-同样的，可以使用Termux直接在手机上运行，方法大同小异不再过多赘述
+同样的，可以使用Termux直接在手机上运行，方法大同小异，不再过多赘述。
