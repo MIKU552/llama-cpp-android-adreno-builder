@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config perl make build-essential
 
     - name: Create and Run Build Script
-      # 更新：修正了 OpenSSL 环境设置策略
+      # 更新：添加符号链接来尝试解决 OpenSSL Configure 查找 gcc 的问题
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -35,13 +35,16 @@ jobs:
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
         LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
-        OPENSSL_ARCH="android-arm64" # 使用官方推荐的 Android 目标
+        OPENSSL_ARCH="android-arm64"
+        # NDK 工具链目标三元组
+        TARGET_TRIPLET=aarch64-linux-android
 
         DEV_DIR="$HOME/dev/llm"
         DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android"
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
+        # (代码与之前版本相同, 此处省略)
         if [ ! -d "$NDK_PATH" ]; then
             mkdir -p "$NDK_BASE_PATH/cmdline-tools"
             cd "$HOME" || exit 1
@@ -103,26 +106,24 @@ jobs:
         fi
         cd openssl || exit 1
 
-        # --- 设置 OpenSSL 交叉编译环境变量 (新策略) ---
-        echo ">>> 设置 OpenSSL 交叉编译环境变量 (包含 NDK sysroot)..."
-        export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-        export TARGET=aarch64-linux-android
-        export SYSROOT=$TOOLCHAIN/sysroot
+        # --- 设置 OpenSSL 交叉编译环境 (基于 NOTES-ANDROID.md + Symlink Workaround) ---
+        echo ">>> 设置 OpenSSL 交叉编译环境 (PATH + Symlinks)..."
+        export NDK_TOOLCHAIN_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        # 仅将 NDK LLVM 工具链 bin 目录添加到 PATH
+        export PATH="$NDK_TOOLCHAIN_BIN:$PATH"
+        # ANDROID_NDK_HOME 已在脚本开头设置
 
-        # 确保 NDK 工具链在 PATH 中 (Configure 脚本有时仍会检查)
-        export PATH="$TOOLCHAIN/bin:$PATH"
-
-        # 设置工具变量，包含 sysroot 和 target (如果需要)
-        export AR=$TOOLCHAIN/bin/llvm-ar
-        export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
-        export LD=$TOOLCHAIN/bin/ld # Configure 可能不直接用 LD, 但设置无害
-        export CC="$TOOLCHAIN/bin/${TARGET}${ANDROID_API_LEVEL}-clang --sysroot=$SYSROOT"
-        export CXX="$TOOLCHAIN/bin/${TARGET}${ANDROID_API_LEVEL}-clang++ --sysroot=$SYSROOT"
-        # export CFLAGS="--sysroot=$SYSROOT" # 有时需要单独设置 CFLAGS/LDFLAGS
-        # export LDFLAGS="--sysroot=$SYSROOT"
+        # --- 创建符号链接以欺骗 Configure 脚本 ---
+        echo ">>> 创建工具链符号链接 (Workaround)..."
+        ln -sf ${TARGET_TRIPLET}${ANDROID_API_LEVEL}-clang ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-gcc
+        ln -sf ${TARGET_TRIPLET}${ANDROID_API_LEVEL}-clang++ ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-g++
+        ln -sf llvm-ar ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-ar
+        ln -sf llvm-ranlib ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-ranlib
+        echo ">>> 符号链接创建完成。"
+        # --- 环境变量设置结束 ---
 
         echo ">>> 配置 OpenSSL for ${OPENSSL_ARCH} API ${ANDROID_API_LEVEL}..."
-        # 使用 android-arm64 目标
+        # 使用 android-arm64 目标, Configure 脚本应通过 PATH 和符号链接找到工具
         ./Configure ${OPENSSL_ARCH} \
             -D__ANDROID_API__=${ANDROID_API_LEVEL} \
             no-shared \
@@ -131,7 +132,7 @@ jobs:
             --openssldir=${DEPS_INSTALL_DIR}/ssl
 
         echo ">>> 开始编译 OpenSSL for Android..."
-        make clean # 清理以防万一
+        make clean
         make -j$(nproc) || { echo "OpenSSL 编译失败"; exit 1; }
         echo ">>> 开始安装 OpenSSL for Android 到 $DEPS_INSTALL_DIR ..."
         make install_sw || { echo "OpenSSL 安装失败"; exit 1; }
@@ -141,7 +142,7 @@ jobs:
 
         # --- 修改步骤: 交叉编译 libcurl for Android (with OpenSSL) ---
         echo ">>> 修改步骤: 交叉编译 libcurl for Android (with OpenSSL)..."
-        # (这部分代码与上一个版本相同, 确保 DCMAKE_PREFIX_PATH 设置正确)
+        # (代码与之前版本相同)
         cd "$DEV_DIR" || exit 1
         if [ ! -d "curl" ]; then
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
@@ -176,7 +177,7 @@ jobs:
 
         # --- 步骤 4: 编译 llama.cpp ---
         echo ">>> 步骤 4: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+OpenSSL)..."
-        # (代码与上一个版本相同, 确保 DCMAKE_PREFIX_PATH 设置正确)
+        # (代码与之前版本相同)
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
