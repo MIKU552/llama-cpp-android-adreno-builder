@@ -193,6 +193,8 @@ jobs:
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
           -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
+          -DCURL_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" \
+          -DCURL_LIBRARY="$DEPS_INSTALL_DIR/lib/libcurl.a" \
           -DCURL_DIR="$DEPS_INSTALL_DIR/lib/cmake/CURL" # <-- 新增: 明确指定 CURL 配置目录
 
         echo ">>> 开始编译 llama.cpp..."
