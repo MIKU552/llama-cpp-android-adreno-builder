@@ -1,4 +1,4 @@
-name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL)
+name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL with SSL)
 
 on:
   schedule:
@@ -16,40 +16,42 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        # 添加 libcurl4-openssl-dev 和 pkg-config
-        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip libcurl4-openssl-dev pkg-config
-
-    - name: Verify dependency installation
-      # 新增：验证依赖是否正确安装
-      run: |
-        echo "--- Checking for curl headers ---"
-        ls -l /usr/include/curl || echo "Curl headers not found in /usr/include/curl"
-        echo "--- Checking for libcurl library ---"
-        ls -l /usr/lib/x86_64-linux-gnu/libcurl.so* || echo "libcurl.so not found in /usr/lib/x86_64-linux-gnu/"
-        echo "--- Checking pkg-config for libcurl ---"
-        pkg-config --exists --print-errors libcurl || echo "pkg-config cannot find libcurl"
-        echo "--- Verification complete ---"
+        # 需要 perl (OpenSSL 配置脚本需要), make, build-essential 等基础编译工具
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config perl make build-essential
 
     - name: Create and Run Build Script
-      # 包含 NDK 安装、依赖准备、克隆最新 llama.cpp 和编译的完整脚本
+      # 更新：脚本现在包含编译 OpenSSL, libcurl (with SSL), 和 llama.cpp 的步骤
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
         set -e # 如果任何命令失败则退出
 
-        # 配置
+        # --- 配置 ---
         NDK_VERSION="26.3.11579264"
         NDK_BASE_PATH="$HOME/android-sdk"
-        export NDK_PATH="$NDK_BASE_PATH/ndk/$NDK_VERSION"
-        ANDROID_ABI="arm64-v8a"
-        ICD_LOADER_ANDROID_PLATFORM="24"
-        LLAMA_CPP_ANDROID_PLATFORM="android-28"
-        DEV_DIR="$HOME/dev/llm"
+        export ANDROID_NDK_HOME="$NDK_BASE_PATH/ndk/$NDK_VERSION" # OpenSSL 配置需要这个变量名
+        export NDK_PATH="$ANDROID_NDK_HOME" # 保持 NDK_PATH 也可用
 
+        ANDROID_ABI="arm64-v8a"
+        ANDROID_API_LEVEL="28" # 选择一个统一的 API Level
+        LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
+        LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
+        # OpenSSL 需要架构名映射
+        OPENSSL_ARCH="android-arm64" # aarch64 -> android-arm64 for OpenSSL Configure
+
+        DEV_DIR="$HOME/dev/llm"
+        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # OpenSSL 和 libcurl 都将安装到这里
+
+        # 设置 NDK 工具链路径到 PATH，OpenSSL 配置脚本会用到
+        export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+
+        # --- 环境检查 ---
+        # (省略...)
+
+        # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
-        if [ -d "$NDK_PATH" ]; then
-            echo "NDK 目录已存在，跳过下载和安装。"
-        else
+        # (代码与之前版本相同, 此处省略以保持简洁)
+        if [ ! -d "$NDK_PATH" ]; then
             mkdir -p "$NDK_BASE_PATH/cmdline-tools"
             cd "$HOME" || exit 1
             wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip && \
@@ -57,7 +59,6 @@ jobs:
             mv cmdline-tools latest && \
             mv latest "$NDK_BASE_PATH/cmdline-tools/" && \
             rm -rf commandlinetools-linux-8512546_latest.zip
-
             SDKMANAGER="$NDK_BASE_PATH/cmdline-tools/latest/bin/sdkmanager"
             if [ ! -f "$SDKMANAGER" ]; then echo "错误：未找到 sdkmanager at $SDKMANAGER"; exit 1; fi
             echo "y" | "$SDKMANAGER" --sdk_root="$NDK_BASE_PATH" "ndk;${NDK_VERSION}" || { echo "NDK 安装失败"; exit 1; }
@@ -65,11 +66,12 @@ jobs:
         if [ ! -d "$NDK_PATH/build/cmake" ]; then echo "错误：NDK 安装后未找到预期的目录"; exit 1; fi
         echo "NDK 路径设置为: $NDK_PATH"
 
-        echo ">>> 步骤 2: 安装 OpenCL 头文件和 ICD Loader..."
+
+        # --- 步骤 2: 准备 OpenCL 文件 ---
+        echo ">>> 步骤 2: 准备 OpenCL 文件..."
+        # (代码与之前版本相同, 此处省略以保持简洁)
         mkdir -p "$DEV_DIR"
         cd "$DEV_DIR" || exit 1
-
-        echo ">>> 2.1: 安装 OpenCL 头文件..."
         OPENCL_HEADERS_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
         if [ ! -d "$OPENCL_HEADERS_TARGET_DIR/CL" ]; then
             git clone https://github.com/KhronosGroup/OpenCL-Headers.git OpenCL-Headers-tmp && \
@@ -79,19 +81,17 @@ jobs:
         else
             echo "OpenCL 头文件似乎已存在，跳过。"
         fi
-
-        echo ">>> 2.2: 编译并安装 OpenCL ICD Loader for Android..."
         OPENCL_LIB_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
         OPENCL_LIB_TARGET_FILE="$OPENCL_LIB_TARGET_DIR/libOpenCL.so"
         if [ ! -f "$OPENCL_LIB_TARGET_FILE" ]; then
             git clone https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
             cd OpenCL-ICD-Loader || exit 1
-            mkdir build_ndk26 && cd build_ndk26 || exit 1
+            mkdir build_ndk_ocl && cd build_ndk_ocl || exit 1
             cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
               -DOPENCL_ICD_LOADER_HEADERS_DIR="$OPENCL_HEADERS_TARGET_DIR" \
               -DANDROID_ABI="$ANDROID_ABI" \
-              -DANDROID_PLATFORM="$ICD_LOADER_ANDROID_PLATFORM" \
+              -DANDROID_PLATFORM="24" \
               -DANDROID_STL=c++_shared
             ninja || { echo "OpenCL ICD Loader 编译失败"; exit 1; }
             mkdir -p "$OPENCL_LIB_TARGET_DIR"
@@ -102,29 +102,91 @@ jobs:
             echo "libOpenCL.so 似乎已存在，跳过 ICD Loader 编译。"
         fi
 
-        echo ">>> 步骤 3: 克隆最新 llama.cpp 并编译..."
+
+        # --- 新增步骤: 交叉编译 OpenSSL for Android ---
+        echo ">>> 新增步骤: 交叉编译 OpenSSL for Android..."
+        mkdir -p "$DEPS_INSTALL_DIR" # 确保安装目录存在
+        cd "$DEV_DIR" || exit 1
+        if [ ! -d "openssl" ]; then
+            # 克隆 OpenSSL 源码 (建议使用稳定版本，例如 openssl-3.0 LTS 或 1.1.1)
+            git clone --depth 1 --branch openssl-3.0.13 https://github.com/openssl/openssl.git # 使用 OpenSSL 3.0.13 LTS
+        fi
+        cd openssl || exit 1
+        # 配置 OpenSSL for Android ARM64
+        # 使用 NDK 环境变量, 指定 API Level, no-shared 表示静态库
+        ./Configure ${OPENSSL_ARCH} \
+            -D__ANDROID_API__=${ANDROID_API_LEVEL} \
+            no-shared \
+            no-tests \
+            --prefix=${DEPS_INSTALL_DIR} \
+            --openssldir=${DEPS_INSTALL_DIR}/ssl
+
+        echo ">>> 开始编译 OpenSSL for Android..."
+        make -j$(nproc) || { echo "OpenSSL 编译失败"; exit 1; }
+        echo ">>> 开始安装 OpenSSL for Android 到 $DEPS_INSTALL_DIR ..."
+        # 使用 install_sw 只安装库和头文件，不安装文档等
+        make install_sw || { echo "OpenSSL 安装失败"; exit 1; }
+        echo ">>> OpenSSL for Android 编译安装完成。"
+        cd "$DEV_DIR" || exit 1 # 返回开发目录
+
+
+        # --- 修改步骤: 交叉编译 libcurl for Android (with OpenSSL) ---
+        echo ">>> 修改步骤: 交叉编译 libcurl for Android (with OpenSSL)..."
+        cd "$DEV_DIR" || exit 1
+        if [ ! -d "curl" ]; then
+            git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
+        fi
+        cd curl || exit 1
+        # 清理之前的构建目录（如果存在）
+        if [ -d "build-android" ]; then rm -rf build-android; fi
+        mkdir -p build-android && cd build-android || exit 1
+        # 配置 CMake for libcurl (交叉编译, 使用自编译的 OpenSSL)
+        cmake .. -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI="$ANDROID_ABI" \
+          -DANDROID_PLATFORM="$LIBCURL_ANDROID_PLATFORM" \
+          -DCMAKE_INSTALL_PREFIX="$DEPS_INSTALL_DIR" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DCURL_DISABLE_LDAP=ON \
+          -DCURL_DISABLE_LDAPS=ON \
+          -DBUILD_CURL_EXE=OFF \
+          -DBUILD_TESTING=OFF \
+          -DENABLE_MANUAL=OFF \
+          -DCURL_USE_OPENSSL=ON `# 启用 OpenSSL` \
+          -DOPENSSL_ROOT_DIR="$DEPS_INSTALL_DIR" `# 指向 OpenSSL 安装目录` \
+          -DOPENSSL_USE_STATIC_LIBS=ON `# 确保链接静态 OpenSSL 库` \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-in-shared-libs" `# 可能需要避免某些链接错误`
+
+        echo ">>> 开始编译 libcurl (with OpenSSL) for Android..."
+        ninja || { echo "libcurl 编译失败"; exit 1; }
+        echo ">>> 开始安装 libcurl (with OpenSSL) for Android 到 $DEPS_INSTALL_DIR ..."
+        ninja install || { echo "libcurl 安装失败"; exit 1; }
+        echo ">>> libcurl (with OpenSSL) for Android 编译安装完成。"
+        cd "$DEV_DIR" || exit 1
+
+
+        # --- 步骤 4: (调整后) 编译 llama.cpp ---
+        echo ">>> 步骤 4: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+OpenSSL)..."
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
         LATEST_COMMIT_HASH=$(git rev-parse --short HEAD)
         echo "LATEST_COMMIT_HASH=${LATEST_COMMIT_HASH}" >> $GITHUB_ENV
 
-        # 清理旧目录（虽然 runner 是新的，但保留此操作无害）
         echo ">>> 清理旧的构建目录..."
-        if [ -d "build-android" ]; then
-            rm -rf build-android
-        fi
+        if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
 
-        echo ">>> 配置 CMake for llama.cpp (with Find Debug)..."
-        # 添加 -DCMAKE_FIND_DEBUG_MODE=ON
+        echo ">>> 配置 CMake for llama.cpp (使用自编译的依赖)..."
+        # CMAKE_PREFIX_PATH 会帮助找到 curl 和 openssl
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_FIND_DEBUG_MODE=ON # <-- 添加了 CMake 查找调试标志
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" # <--- 告诉 CMake 在这里找依赖
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
@@ -144,7 +206,7 @@ jobs:
       run: |
         TODAY=$(date +%Y-%m-%d)
         echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
-        ARTIFACT_NAME="llama-android-opencl-${TODAY}"
+        ARTIFACT_NAME="llama-android-opencl-ssl-${TODAY}" # 文件名中加入 ssl 标识
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
         zip -r "${ARTIFACT_NAME}.zip" ./*
@@ -155,14 +217,14 @@ jobs:
     - name: Create or Update GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: daily-android-opencl-adreno
-        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL) - ${{ env.TODAY_DATE }}"
+        tag_name: daily-android-opencl-adreno-ssl # 标签名也加入 ssl 标识
+        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL + SSL) - ${{ env.TODAY_DATE }}"
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
           Automatic daily build triggered on ${{ env.TODAY_DATE }}.
           Compiled from llama.cpp commit: `${{ env.LATEST_COMMIT_HASH }}`
-          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`).
+          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). **Includes statically linked libcurl with OpenSSL 3.0.13 support.**
         files: ${{ env.ARTIFACT_ZIP_PATH }}
         fail_on_unmatched_files: true
         prerelease: true
