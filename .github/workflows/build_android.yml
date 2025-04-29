@@ -1,4 +1,4 @@
-name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL - No CURL)
+name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL + mbedTLS)
 
 on:
   schedule:
@@ -16,11 +16,12 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        # 只需要基础的编译工具和打包工具
-        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip
+        # mbed TLS 不需要 Go, 但可能需要 Python (其某些脚本可能需要)
+        # 保留 pkg-config
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config python3 make build-essential
 
     - name: Create and Run Build Script
-      # 简化后的脚本：只包含 NDK, OpenCL Loader, 和 llama.cpp (禁用 CURL)
+      # 更新：SSL 后端替换为 mbedTLS
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -35,14 +36,15 @@ jobs:
         ANDROID_ABI="arm64-v8a"
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
-        # ICD Loader 的 API Level 可以保持较低
-        ICD_LOADER_ANDROID_PLATFORM="24"
+        LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
+        MBEDTLS_ANDROID_PLATFORM="${ANDROID_API_LEVEL}" # CMake 使用数字
 
         DEV_DIR="$HOME/dev/llm"
-        # 不再需要 DEPS_INSTALL_DIR
+        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # mbedTLS 和 libcurl 都将安装到这里
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
+        # (代码与之前版本相同, 此处省略)
         if [ ! -d "$NDK_PATH" ]; then
             mkdir -p "$NDK_BASE_PATH/cmdline-tools"
             cd "$HOME" || exit 1
@@ -61,6 +63,7 @@ jobs:
 
         # --- 步骤 2: 准备 OpenCL 文件 ---
         echo ">>> 步骤 2: 准备 OpenCL 文件..."
+        # (代码与之前版本相同, 此处省略)
         mkdir -p "$DEV_DIR"
         cd "$DEV_DIR" || exit 1
         OPENCL_HEADERS_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
@@ -82,7 +85,7 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
               -DOPENCL_ICD_LOADER_HEADERS_DIR="$OPENCL_HEADERS_TARGET_DIR" \
               -DANDROID_ABI="$ANDROID_ABI" \
-              -DANDROID_PLATFORM="$ICD_LOADER_ANDROID_PLATFORM" \
+              -DANDROID_PLATFORM="24" \
               -DANDROID_STL=c++_shared
             ninja || { echo "OpenCL ICD Loader 编译失败"; exit 1; }
             mkdir -p "$OPENCL_LIB_TARGET_DIR"
@@ -93,8 +96,76 @@ jobs:
             echo "libOpenCL.so 似乎已存在，跳过 ICD Loader 编译。"
         fi
 
-        # --- 步骤 3: 编译 llama.cpp (禁用 CURL) ---
-        echo ">>> 步骤 3: 克隆最新 llama.cpp 并编译 (禁用 CURL)..."
+
+        # --- 步骤 3: 交叉编译 mbed TLS for Android ---
+        echo ">>> 步骤 3: 交叉编译 mbed TLS for Android..."
+        mkdir -p "$DEPS_INSTALL_DIR" # 确保安装目录存在
+        cd "$DEV_DIR" || exit 1
+        if [ ! -d "mbedtls" ]; then
+            # 克隆 mbed TLS 源码 (建议使用一个 LTS 或稳定版本 tag)
+            git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls.git # 使用 v3.6.0 LTS
+        fi
+        cd mbedtls || exit 1
+        # 清理可能存在的旧构建目录
+        if [ -d "build" ]; then rm -rf build; fi
+        mkdir build && cd build || exit 1
+        # 配置 CMake for mbed TLS (交叉编译)
+        cmake .. -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI="$ANDROID_ABI" \
+          -DANDROID_PLATFORM="$MBEDTLS_ANDROID_PLATFORM" \
+          -DCMAKE_INSTALL_PREFIX="$DEPS_INSTALL_DIR" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DENABLE_TESTING=OFF \
+          -DENABLE_PROGRAMS=OFF \
+          -DUSE_SHARED_MBEDTLS_LIBRARY=OFF # 构建静态库
+
+        echo ">>> 开始编译 mbed TLS for Android..."
+        ninja || { echo "mbed TLS 编译失败"; exit 1; }
+        echo ">>> 开始安装 mbed TLS for Android 到 $DEPS_INSTALL_DIR ..."
+        # mbedTLS 使用标准的 ninja install
+        ninja install || { echo "mbed TLS 安装失败"; exit 1; }
+        echo ">>> mbed TLS for Android 编译安装完成。"
+        cd "$DEV_DIR" || exit 1
+
+
+        # --- 步骤 4: 交叉编译 libcurl for Android (with mbed TLS) ---
+        echo ">>> 步骤 4: 交叉编译 libcurl for Android (with mbed TLS)..."
+        cd "$DEV_DIR" || exit 1
+        if [ ! -d "curl" ]; then
+            git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
+        fi
+        cd curl || exit 1
+        if [ -d "build-android" ]; then rm -rf build-android; fi
+        mkdir -p build-android && cd build-android || exit 1
+        # 配置 CMake for libcurl (尝试使用 mbed TLS)
+        cmake .. -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI="$ANDROID_ABI" \
+          -DANDROID_PLATFORM="$LIBCURL_ANDROID_PLATFORM" \
+          -DCMAKE_INSTALL_PREFIX="$DEPS_INSTALL_DIR" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_CURL_EXE=OFF \
+          -DBUILD_TESTING=OFF \
+          -DCURL_DISABLE_LDAP=ON \
+          -DCURL_DISABLE_LDAPS=ON \
+          -DENABLE_MANUAL=OFF \
+          -DCURL_CA_PATH=/system/etc/security/cacerts \
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
+          -DCURL_USE_MBEDTLS=ON # <--- 尝试显式启用 mbedTLS (如果此标志无效，CMake 会报错)
+
+        echo ">>> 开始编译 libcurl (with mbed TLS) for Android..."
+        ninja || { echo "libcurl 编译失败"; exit 1; }
+        echo ">>> 开始安装 libcurl (with mbed TLS) for Android 到 $DEPS_INSTALL_DIR ..."
+        ninja install || { echo "libcurl 安装失败"; exit 1; }
+        echo ">>> libcurl (with mbed TLS) for Android 编译安装完成。"
+        cd "$DEV_DIR" || exit 1
+
+
+        # --- 步骤 5: 编译 llama.cpp ---
+        echo ">>> 步骤 5: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+mbedTLS)..."
+        # (代码与之前版本相同)
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
@@ -105,14 +176,14 @@ jobs:
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
 
-        echo ">>> 配置 CMake for llama.cpp (禁用 CURL)..."
+        echo ">>> 配置 CMake for llama.cpp (使用自编译的依赖)..."
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DLLAMA_CURL=OFF # <-- 禁用 CURL
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
@@ -129,11 +200,12 @@ jobs:
         $HOME/build_android_opencl.sh
 
     - name: Package Binaries
+      # (代码与之前版本相同)
       run: |
         TODAY=$(date +%Y-%m-%d)
         echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
-        # 更新文件名，移除 ssl 标识
-        ARTIFACT_NAME="llama-android-opencl-nocurl-${TODAY}"
+        # 更新文件名
+        ARTIFACT_NAME="llama-android-opencl-mbedtls-${TODAY}"
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
         zip -r "${ARTIFACT_NAME}.zip" ./*
@@ -142,19 +214,20 @@ jobs:
         echo "ARTIFACT_ZIP_NAME=${ARTIFACT_NAME}.zip" >> $GITHUB_ENV
 
     - name: Create or Update GitHub Release
+      # (代码与之前版本相同)
       uses: softprops/action-gh-release@v2
       with:
-        # 更新标签名，移除 ssl 标识
-        tag_name: daily-android-opencl-adreno-nocurl
+        # 更新标签名
+        tag_name: daily-android-opencl-adreno-mbedtls
         # 更新 Release 名称
-        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL - No CURL) - ${{ env.TODAY_DATE }}"
+        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL + mbedTLS) - ${{ env.TODAY_DATE }}"
         # 更新 Release Body
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
           Automatic daily build triggered on ${{ env.TODAY_DATE }}.
           Compiled from llama.cpp commit: `${{ env.LATEST_COMMIT_HASH }}`
-          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). **CURL support is disabled (`-DLLAMA_CURL=OFF`).**
+          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). **Includes statically linked libcurl with mbedTLS support.**
         files: ${{ env.ARTIFACT_ZIP_PATH }}
         fail_on_unmatched_files: true
         prerelease: true
