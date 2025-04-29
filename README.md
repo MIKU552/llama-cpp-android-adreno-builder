@@ -17,7 +17,7 @@
 * **目标 API Level:** 28 (或根据工作流配置)
 * **GPU 加速:** 启用 OpenCL 后端 (`GGML_OPENCL=ON`)，针对 Qualcomm Adreno GPU 进行了优化。
 * **网络支持:** 包含 CURL 支持，并静态链接了 **mbed TLS** 作为 SSL/TLS 后端，以支持 HTTPS 功能。
-* **静态链接:** 依赖库（mbed TLS, libcurl）和 `llama.cpp` 本身编译为静态库/可执行文件，以减少运行时依赖。
+* **静态链接:** 依赖库（mbed TLS, libcurl, openmp）和 `llama.cpp` 本身编译为静态库/可执行文件，以减少运行时依赖。
 
 ## 工作流
 
