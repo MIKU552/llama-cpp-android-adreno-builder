@@ -178,7 +178,7 @@ jobs:
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
 
-        MBEDTLS_LINK_FLAGS="-L${DEPS_INSTALL_DIR}/lib -lmbedtls -lmbedx509 -lmbedcrypto -ldl"
+        MBEDTLS_LINK_FLAGS="-L${DEPS_INSTALL_DIR}/lib -lmbedtls -lmbedx509 -lmbedcrypto -ldl -lz"
         
         echo ">>> 配置 CMake for llama.cpp (使用自编译的依赖)..."
         cmake .. -G Ninja \
