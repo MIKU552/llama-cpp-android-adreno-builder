@@ -28,7 +28,7 @@
     * 支持手动触发 (`workflow_dispatch`)。
 * **主要步骤:**
     1.  设置 Ubuntu Runner 环境。
-    2.  安装必要的构建依赖（CMake, Ninja, NDK, Git, Python3 等）。
+    2.  安装必要的构建依赖（CMake, Ninja, Git, Python3 等）。
     3.  下载并安装指定版本的 Android NDK。
     4.  准备 OpenCL 相关文件（头文件、编译 ICD Loader）。
     5.  交叉编译 **mbed TLS** for Android (包括其子模块)。
