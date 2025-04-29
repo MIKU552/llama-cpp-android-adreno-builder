@@ -16,10 +16,11 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go
+        # 新增 autoconf, automake, libtool 用于 curl 的 configure
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go autoconf automake libtool make build-essential
 
     - name: Create and Run Build Script
-      # 更新：为 libcurl 的 CMake 添加 OPENSSL_ROOT_DIR 尝试
+      # 更新：libcurl 构建切换为使用 ./configure
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -34,11 +35,12 @@ jobs:
         ANDROID_ABI="arm64-v8a"
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
-        LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
-        BORINGSSL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
+        # Configure 需要 NDK 目标三元组
+        HOST_TRIPLET="aarch64-linux-android"
+        BORINGSSL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}" # BoringSSL CMake 需要数字
 
         DEV_DIR="$HOME/dev/llm"
-        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android"
+        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # BoringSSL 和 libcurl 都将安装到这里
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
@@ -95,8 +97,9 @@ jobs:
         fi
 
 
-        # --- 新增步骤: 交叉编译 BoringSSL for Android ---
-        echo ">>> 新增步骤: 交叉编译 BoringSSL for Android..."
+        # --- 步骤 3: 交叉编译 BoringSSL for Android ---
+        # (代码与之前成功编译并复制的版本相同)
+        echo ">>> 步骤 3: 交叉编译 BoringSSL for Android..."
         mkdir -p "$DEPS_INSTALL_DIR"
         cd "$DEV_DIR" || exit 1
         if [ ! -d "boringssl" ]; then
@@ -116,7 +119,6 @@ jobs:
         echo ">>> 开始编译 BoringSSL for Android (指定目标)..."
         ninja crypto ssl || { echo "BoringSSL 编译失败"; exit 1; }
 
-        # 手动安装 BoringSSL (修正路径)
         echo ">>> 手动安装 BoringSSL 到 $DEPS_INSTALL_DIR ..."
         mkdir -p "$DEPS_INSTALL_DIR/lib"
         mkdir -p "$DEPS_INSTALL_DIR/include"
@@ -127,43 +129,79 @@ jobs:
         cd "$DEV_DIR" || exit 1
 
 
-        # --- 修改步骤: 交叉编译 libcurl for Android (with BoringSSL) ---
-        echo ">>> 修改步骤: 交叉编译 libcurl for Android (with BoringSSL)..."
+        # --- 新步骤: 使用 Configure 交叉编译 libcurl for Android (with BoringSSL) ---
+        echo ">>> 新步骤: 使用 Configure 交叉编译 libcurl for Android (with BoringSSL)..."
         cd "$DEV_DIR" || exit 1
         if [ ! -d "curl" ]; then
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
         fi
         cd curl || exit 1
-        if [ -d "build-android" ]; then rm -rf build-android; fi
-        mkdir -p build-android && cd build-android || exit 1
-        # 配置 CMake for libcurl (尝试使用 OPENSSL_ROOT_DIR 指向 BoringSSL)
-        cmake .. -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
-          -DANDROID_ABI="$ANDROID_ABI" \
-          -DANDROID_PLATFORM="$LIBCURL_ANDROID_PLATFORM" \
-          -DCMAKE_INSTALL_PREFIX="$DEPS_INSTALL_DIR" \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_SHARED_LIBS=OFF \
-          -DBUILD_CURL_EXE=OFF \
-          -DBUILD_TESTING=OFF \
-          -DCURL_DISABLE_LDAP=ON \
-          -DCURL_DISABLE_LDAPS=ON \
-          -DENABLE_MANUAL=OFF \
-          -DCURL_CA_PATH=/system/etc/security/cacerts \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
-          -DOPENSSL_ROOT_DIR="$DEPS_INSTALL_DIR" # <-- 新增：尝试指定 ROOT_DIR
+
+        # --- 设置 Autotools 交叉编译环境变量 ---
+        echo ">>> 设置 libcurl (Autotools) 交叉编译环境变量..."
+        export TOOLCHAIN_BIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
+        export SYSROOT=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+        export CC="${TOOLCHAIN_BIN}/${HOST_TRIPLET}${ANDROID_API_LEVEL}-clang"
+        export CXX="${TOOLCHAIN_BIN}/${HOST_TRIPLET}${ANDROID_API_LEVEL}-clang++"
+        export AR="${TOOLCHAIN_BIN}/llvm-ar"
+        export AS="${TOOLCHAIN_BIN}/llvm-as"
+        export LD="${TOOLCHAIN_BIN}/ld"
+        export RANLIB="${TOOLCHAIN_BIN}/llvm-ranlib"
+        export STRIP="${TOOLCHAIN_BIN}/llvm-strip"
+        export CFLAGS="--sysroot=$SYSROOT -O2 -fPIC" # 添加优化和 PIC
+        export CXXFLAGS="--sysroot=$SYSROOT -O2 -fPIC"
+        export LDFLAGS="--sysroot=$SYSROOT"
+        # 告诉 pkg-config 去哪里找 .pc 文件 (BoringSSL 可能不生成，但设置无害)
+        export PKG_CONFIG_PATH="$DEPS_INSTALL_DIR/lib/pkgconfig"
+        # --- 环境变量设置结束 ---
+
+        echo ">>> 运行 libcurl 的 ./configure..."
+        # 运行 autogen (如果需要，通常从 git clone 下来需要)
+        ./buildconf --force
+
+        ./configure --host="$HOST_TRIPLET" \
+            --prefix="$DEPS_INSTALL_DIR" \
+            --with-ssl="$DEPS_INSTALL_DIR" `# 指向 BoringSSL 安装目录` \
+            --enable-static \
+            --disable-shared \
+            --disable-ldap \
+            --disable-ldaps \
+            --disable-manual \
+            --disable-verbose \
+            --disable-crypto-auth \
+            --disable-ftp \
+            --disable-file \
+            --disable-telnet \
+            --disable-tftp \
+            --disable-dict \
+            --disable-imap \
+            --disable-mqtt \
+            --disable-pop3 \
+            --disable-rtsp \
+            --disable-smb \
+            --disable-smtp \
+            --disable-gopher \
+            --disable-websockets \
+            --disable-tests \
+            --without-zlib `# 如果 NDK sysroot 中没有，可以禁用` \
+            --without-brotli \
+            --without-zstd \
+            --without-libidn2 \
+            --with-ca-path=/system/etc/security/cacerts \
+             || { echo "./configure 失败"; exit 1; }
+
 
         echo ">>> 开始编译 libcurl (with BoringSSL) for Android..."
-        ninja || { echo "libcurl 编译失败"; exit 1; }
+        make -j$(nproc) || { echo "libcurl (make) 编译失败"; exit 1; }
         echo ">>> 开始安装 libcurl (with BoringSSL) for Android 到 $DEPS_INSTALL_DIR ..."
-        ninja install || { echo "libcurl 安装失败"; exit 1; }
+        make install || { echo "libcurl (make install) 失败"; exit 1; }
         echo ">>> libcurl (with BoringSSL) for Android 编译安装完成。"
         cd "$DEV_DIR" || exit 1
 
 
-        # --- 步骤 4: 编译 llama.cpp ---
-        echo ">>> 步骤 4: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+BoringSSL)..."
-        # (代码与之前版本相同)
+        # --- 步骤 5: 编译 llama.cpp ---
+        echo ">>> 步骤 5: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+BoringSSL)..."
+        # (代码与之前版本相同, 仍然使用 CMake 和 CMAKE_PREFIX_PATH)
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
@@ -181,7 +219,7 @@ jobs:
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" # <-- CMake 应该能在这里找到 libcurl
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
