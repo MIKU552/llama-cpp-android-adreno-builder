@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config python3 make build-essential
 
     - name: Create and Run Build Script
-      # 更新：为 libcurl 的 CMake 添加 mbedTLS 具体路径变量
+      # 更新：为 libcurl 的 CMake 设置 MBEDTLS_INCLUDE_DIRS (复数) 及所有库路径
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -136,7 +136,7 @@ jobs:
         cd curl || exit 1
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
-        # 配置 CMake for libcurl (显式设置 mbedTLS 路径变量)
+        # 配置 CMake for libcurl (显式设置所有 mbedTLS 路径变量)
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -152,10 +152,10 @@ jobs:
           -DCURL_CA_PATH=/system/etc/security/cacerts \
           -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
           -DCURL_USE_MBEDTLS=ON \
-          -DMBEDTLS_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" `# 新增` \
-          -DMBEDTLS_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedtls.a" `# 新增` \
-          -DMBEDX509_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedx509.a" `# 新增` \
-          -DMBEDCRYPTO_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedcrypto.a" `# 新增`
+          -DMBEDTLS_INCLUDE_DIRS="$DEPS_INSTALL_DIR/include" `# 使用复数形式` \
+          -DMBEDTLS_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedtls.a" `# 重新添加` \
+          -DMBEDX509_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedx509.a" `# 重新添加` \
+          -DMBEDCRYPTO_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedcrypto.a" `# 重新添加`
 
         echo ">>> 开始编译 libcurl (with mbed TLS) for Android..."
         ninja || { echo "libcurl 编译失败"; exit 1; }
