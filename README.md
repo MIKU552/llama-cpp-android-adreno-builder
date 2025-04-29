@@ -1,6 +1,6 @@
 # 自动化 Android llama.cpp 构建器 (Adreno OpenCL + mbedTLS)
 
-[![Build Status](https://github.com/MIKU552/llama-cpp-android-adreno-builder/actions/workflows/build_android.yml/badge.svg)](https://github.com/MIKU552/llama-cpp-android-adreno-builder/actions/workflows/build_android.yml)
+[![Build Status](https://github.com/MIKU552/llama-cpp-android-adreno-builder/actions/workflows/build_android_mbedtls.yml/badge.svg)](https://github.com/MIKU552/llama-cpp-android-adreno-builder/actions/workflows/build_android_mbedtls.yml)
 
 ## 概述
 
