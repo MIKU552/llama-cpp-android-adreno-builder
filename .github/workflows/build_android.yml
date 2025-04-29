@@ -16,7 +16,19 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip libssl-dev libcurl4-openssl-dev pkg-config
+        # 添加 libcurl4-openssl-dev 和 pkg-config
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip libcurl4-openssl-dev pkg-config
+
+    - name: Verify dependency installation
+      # 新增：验证依赖是否正确安装
+      run: |
+        echo "--- Checking for curl headers ---"
+        ls -l /usr/include/curl || echo "Curl headers not found in /usr/include/curl"
+        echo "--- Checking for libcurl library ---"
+        ls -l /usr/lib/x86_64-linux-gnu/libcurl.so* || echo "libcurl.so not found in /usr/lib/x86_64-linux-gnu/"
+        echo "--- Checking pkg-config for libcurl ---"
+        pkg-config --exists --print-errors libcurl || echo "pkg-config cannot find libcurl"
+        echo "--- Verification complete ---"
 
     - name: Create and Run Build Script
       # 包含 NDK 安装、依赖准备、克隆最新 llama.cpp 和编译的完整脚本
@@ -92,22 +104,27 @@ jobs:
 
         echo ">>> 步骤 3: 克隆最新 llama.cpp 并编译..."
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
-        # 你可能需要修改这里，指向你自己的 fork 或者特定分支
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
-        # 获取当前 commit hash 用于 Release body
         LATEST_COMMIT_HASH=$(git rev-parse --short HEAD)
         echo "LATEST_COMMIT_HASH=${LATEST_COMMIT_HASH}" >> $GITHUB_ENV
 
+        # 清理旧目录（虽然 runner 是新的，但保留此操作无害）
+        echo ">>> 清理旧的构建目录..."
+        if [ -d "build-android" ]; then
+            rm -rf build-android
+        fi
         mkdir -p build-android && cd build-android || exit 1
 
-        echo ">>> 配置 CMake for llama.cpp..."
+        echo ">>> 配置 CMake for llama.cpp (with Find Debug)..."
+        # 添加 -DCMAKE_FIND_DEBUG_MODE=ON
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
-          -DGGML_OPENCL=ON
+          -DGGML_OPENCL=ON \
+          -DCMAKE_FIND_DEBUG_MODE=ON # <-- 添加了 CMake 查找调试标志
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
@@ -125,9 +142,8 @@ jobs:
 
     - name: Package Binaries
       run: |
-        # 使用日期 YYYY-MM-DD 格式
         TODAY=$(date +%Y-%m-%d)
-        echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV # 将日期存入环境变量
+        echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
         ARTIFACT_NAME="llama-android-opencl-${TODAY}"
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
@@ -139,11 +155,8 @@ jobs:
     - name: Create or Update GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        # 使用固定的、更具体的标签名
         tag_name: daily-android-opencl-adreno
-        # 更新 Release 名称，包含日期和目标硬件
         name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL) - ${{ env.TODAY_DATE }}"
-        # 更新 Release Body，强调兼容性要求和构建信息
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
@@ -152,5 +165,4 @@ jobs:
           Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`).
         files: ${{ env.ARTIFACT_ZIP_PATH }}
         fail_on_unmatched_files: true
-        # draft: false
-        prerelease: true # 标记为预发布可能更合适，因为是每日构建
+        prerelease: true
