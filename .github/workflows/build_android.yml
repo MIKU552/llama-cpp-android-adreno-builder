@@ -1,4 +1,4 @@
-name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL with SSL)
+name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL - No CURL)
 
 on:
   schedule:
@@ -16,10 +16,11 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config perl make build-essential
+        # 只需要基础的编译工具和打包工具
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip
 
     - name: Create and Run Build Script
-      # 更新：添加符号链接来尝试解决 OpenSSL Configure 查找 gcc 的问题
+      # 简化后的脚本：只包含 NDK, OpenCL Loader, 和 llama.cpp (禁用 CURL)
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -34,17 +35,14 @@ jobs:
         ANDROID_ABI="arm64-v8a"
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
-        LIBCURL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}"
-        OPENSSL_ARCH="android-arm64"
-        # NDK 工具链目标三元组
-        TARGET_TRIPLET=aarch64-linux-android
+        # ICD Loader 的 API Level 可以保持较低
+        ICD_LOADER_ANDROID_PLATFORM="24"
 
         DEV_DIR="$HOME/dev/llm"
-        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android"
+        # 不再需要 DEPS_INSTALL_DIR
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
-        # (代码与之前版本相同, 此处省略)
         if [ ! -d "$NDK_PATH" ]; then
             mkdir -p "$NDK_BASE_PATH/cmdline-tools"
             cd "$HOME" || exit 1
@@ -63,7 +61,6 @@ jobs:
 
         # --- 步骤 2: 准备 OpenCL 文件 ---
         echo ">>> 步骤 2: 准备 OpenCL 文件..."
-        # (代码与之前版本相同, 此处省略)
         mkdir -p "$DEV_DIR"
         cd "$DEV_DIR" || exit 1
         OPENCL_HEADERS_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
@@ -85,7 +82,7 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
               -DOPENCL_ICD_LOADER_HEADERS_DIR="$OPENCL_HEADERS_TARGET_DIR" \
               -DANDROID_ABI="$ANDROID_ABI" \
-              -DANDROID_PLATFORM="24" \
+              -DANDROID_PLATFORM="$ICD_LOADER_ANDROID_PLATFORM" \
               -DANDROID_STL=c++_shared
             ninja || { echo "OpenCL ICD Loader 编译失败"; exit 1; }
             mkdir -p "$OPENCL_LIB_TARGET_DIR"
@@ -96,88 +93,8 @@ jobs:
             echo "libOpenCL.so 似乎已存在，跳过 ICD Loader 编译。"
         fi
 
-
-        # --- 新增步骤: 交叉编译 OpenSSL for Android ---
-        echo ">>> 新增步骤: 交叉编译 OpenSSL for Android..."
-        mkdir -p "$DEPS_INSTALL_DIR"
-        cd "$DEV_DIR" || exit 1
-        if [ ! -d "openssl" ]; then
-            git clone --depth 1 --branch openssl-3.0.13 https://github.com/openssl/openssl.git
-        fi
-        cd openssl || exit 1
-
-        # --- 设置 OpenSSL 交叉编译环境 (基于 NOTES-ANDROID.md + Symlink Workaround) ---
-        echo ">>> 设置 OpenSSL 交叉编译环境 (PATH + Symlinks)..."
-        export NDK_TOOLCHAIN_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-        # 仅将 NDK LLVM 工具链 bin 目录添加到 PATH
-        export PATH="$NDK_TOOLCHAIN_BIN:$PATH"
-        # ANDROID_NDK_HOME 已在脚本开头设置
-
-        # --- 创建符号链接以欺骗 Configure 脚本 ---
-        echo ">>> 创建工具链符号链接 (Workaround)..."
-        ln -sf ${TARGET_TRIPLET}${ANDROID_API_LEVEL}-clang ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-gcc
-        ln -sf ${TARGET_TRIPLET}${ANDROID_API_LEVEL}-clang++ ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-g++
-        ln -sf llvm-ar ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-ar
-        ln -sf llvm-ranlib ${NDK_TOOLCHAIN_BIN}/${TARGET_TRIPLET}-ranlib
-        echo ">>> 符号链接创建完成。"
-        # --- 环境变量设置结束 ---
-
-        echo ">>> 配置 OpenSSL for ${OPENSSL_ARCH} API ${ANDROID_API_LEVEL}..."
-        # 使用 android-arm64 目标, Configure 脚本应通过 PATH 和符号链接找到工具
-        ./Configure ${OPENSSL_ARCH} \
-            -D__ANDROID_API__=${ANDROID_API_LEVEL} \
-            no-shared \
-            no-tests \
-            --prefix=${DEPS_INSTALL_DIR} \
-            --openssldir=${DEPS_INSTALL_DIR}/ssl
-
-        echo ">>> 开始编译 OpenSSL for Android..."
-        make clean
-        make -j$(nproc) || { echo "OpenSSL 编译失败"; exit 1; }
-        echo ">>> 开始安装 OpenSSL for Android 到 $DEPS_INSTALL_DIR ..."
-        make install_sw || { echo "OpenSSL 安装失败"; exit 1; }
-        echo ">>> OpenSSL for Android 编译安装完成。"
-        cd "$DEV_DIR" || exit 1
-
-
-        # --- 修改步骤: 交叉编译 libcurl for Android (with OpenSSL) ---
-        echo ">>> 修改步骤: 交叉编译 libcurl for Android (with OpenSSL)..."
-        # (代码与之前版本相同)
-        cd "$DEV_DIR" || exit 1
-        if [ ! -d "curl" ]; then
-            git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
-        fi
-        cd curl || exit 1
-        if [ -d "build-android" ]; then rm -rf build-android; fi
-        mkdir -p build-android && cd build-android || exit 1
-        cmake .. -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
-          -DANDROID_ABI="$ANDROID_ABI" \
-          -DANDROID_PLATFORM="$LIBCURL_ANDROID_PLATFORM" \
-          -DCMAKE_INSTALL_PREFIX="$DEPS_INSTALL_DIR" \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_SHARED_LIBS=OFF \
-          -DCURL_DISABLE_LDAP=ON \
-          -DCURL_DISABLE_LDAPS=ON \
-          -DBUILD_CURL_EXE=OFF \
-          -DBUILD_TESTING=OFF \
-          -DENABLE_MANUAL=OFF \
-          -DCURL_USE_OPENSSL=ON \
-          -DOPENSSL_ROOT_DIR="$DEPS_INSTALL_DIR" \
-          -DOPENSSL_USE_STATIC_LIBS=ON \
-          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--unresolved-symbols=ignore-in-shared-libs"
-
-        echo ">>> 开始编译 libcurl (with OpenSSL) for Android..."
-        ninja || { echo "libcurl 编译失败"; exit 1; }
-        echo ">>> 开始安装 libcurl (with OpenSSL) for Android 到 $DEPS_INSTALL_DIR ..."
-        ninja install || { echo "libcurl 安装失败"; exit 1; }
-        echo ">>> libcurl (with OpenSSL) for Android 编译安装完成。"
-        cd "$DEV_DIR" || exit 1
-
-
-        # --- 步骤 4: 编译 llama.cpp ---
-        echo ">>> 步骤 4: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+OpenSSL)..."
-        # (代码与之前版本相同)
+        # --- 步骤 3: 编译 llama.cpp (禁用 CURL) ---
+        echo ">>> 步骤 3: 克隆最新 llama.cpp 并编译 (禁用 CURL)..."
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
@@ -188,14 +105,14 @@ jobs:
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
 
-        echo ">>> 配置 CMake for llama.cpp (使用自编译的依赖)..."
+        echo ">>> 配置 CMake for llama.cpp (禁用 CURL)..."
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
+          -DLLAMA_CURL=OFF # <-- 禁用 CURL
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
@@ -215,7 +132,8 @@ jobs:
       run: |
         TODAY=$(date +%Y-%m-%d)
         echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV
-        ARTIFACT_NAME="llama-android-opencl-ssl-${TODAY}"
+        # 更新文件名，移除 ssl 标识
+        ARTIFACT_NAME="llama-android-opencl-nocurl-${TODAY}"
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
         zip -r "${ARTIFACT_NAME}.zip" ./*
@@ -226,14 +144,17 @@ jobs:
     - name: Create or Update GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: daily-android-opencl-adreno-ssl
-        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL + SSL) - ${{ env.TODAY_DATE }}"
+        # 更新标签名，移除 ssl 标识
+        tag_name: daily-android-opencl-adreno-nocurl
+        # 更新 Release 名称
+        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL - No CURL) - ${{ env.TODAY_DATE }}"
+        # 更新 Release Body
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
           Automatic daily build triggered on ${{ env.TODAY_DATE }}.
           Compiled from llama.cpp commit: `${{ env.LATEST_COMMIT_HASH }}`
-          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). **Includes statically linked libcurl with OpenSSL 3.0.13 support.**
+          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). **CURL support is disabled (`-DLLAMA_CURL=OFF`).**
         files: ${{ env.ARTIFACT_ZIP_PATH }}
         fail_on_unmatched_files: true
         prerelease: true
