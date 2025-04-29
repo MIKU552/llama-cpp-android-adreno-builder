@@ -15,7 +15,7 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip perl
 
     - name: Create and Run Build Script (with OpenSSL & CURL)
       run: |
@@ -69,6 +69,10 @@ jobs:
         TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64"
         export PATH="$TOOLCHAIN/bin:$PATH"
         export ANDROID_API="$ANDROID_API_LEVEL"
+        # 为 OpenSSL Configure 提供 gcc 名称映射
+        if [ ! -f "$TOOLCHAIN/bin/aarch64-linux-android-gcc" ]; then
+          ln -s "$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang" "$TOOLCHAIN/bin/aarch64-linux-android-gcc"
+        fi
         ./Configure android-arm64 no-shared no-unit-test \
           --prefix=$DEV_DIR/openssl-android \
           --openssldir=$DEV_DIR/openssl-android
@@ -109,7 +113,7 @@ jobs:
           -DCURL_INCLUDE_DIR="$CURL_INC" \
           -DBUILD_SHARED_LIBS=OFF
         ninja
-        echo "LLAMA_BIN_PATH=$(pwd)/bin" >> \$GITHUB_ENV
+        echo "LLAMA_BIN_PATH=$(pwd)/bin" >> $GITHUB_ENV
         EOF
 
         chmod +x $HOME/build_android_opencl_curl.sh
