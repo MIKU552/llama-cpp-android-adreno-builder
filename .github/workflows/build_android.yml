@@ -16,11 +16,10 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        # 新增 autoconf, automake, libtool 用于 curl 的 configure
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config golang-go autoconf automake libtool make build-essential
 
     - name: Create and Run Build Script
-      # 更新：libcurl 构建切换为使用 ./configure
+      # 更新：为 libcurl 的 configure 添加 LDFLAGS 和 LIBS 环境变量
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -35,12 +34,11 @@ jobs:
         ANDROID_ABI="arm64-v8a"
         ANDROID_API_LEVEL="28"
         LLAMA_CPP_ANDROID_PLATFORM="android-${ANDROID_API_LEVEL}"
-        # Configure 需要 NDK 目标三元组
-        HOST_TRIPLET="aarch64-linux-android"
-        BORINGSSL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}" # BoringSSL CMake 需要数字
+        HOST_TRIPLET="aarch64-linux-android" # For ./configure --host
+        BORINGSSL_ANDROID_PLATFORM="${ANDROID_API_LEVEL}" # For BoringSSL CMake
 
         DEV_DIR="$HOME/dev/llm"
-        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android" # BoringSSL 和 libcurl 都将安装到这里
+        DEPS_INSTALL_DIR="$DEV_DIR/deps-install-android"
 
         # --- 步骤 1: 安装 Android NDK ---
         echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
@@ -98,8 +96,8 @@ jobs:
 
 
         # --- 步骤 3: 交叉编译 BoringSSL for Android ---
-        # (代码与之前成功编译并复制的版本相同)
         echo ">>> 步骤 3: 交叉编译 BoringSSL for Android..."
+        # (代码与之前成功编译并复制的版本相同)
         mkdir -p "$DEPS_INSTALL_DIR"
         cd "$DEV_DIR" || exit 1
         if [ ! -d "boringssl" ]; then
@@ -137,7 +135,7 @@ jobs:
         fi
         cd curl || exit 1
 
-        # --- 设置 Autotools 交叉编译环境变量 ---
+        # --- 设置 Autotools 交叉编译环境变量 (添加 LDFLAGS 和 LIBS) ---
         echo ">>> 设置 libcurl (Autotools) 交叉编译环境变量..."
         export TOOLCHAIN_BIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
         export SYSROOT=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot
@@ -148,44 +146,31 @@ jobs:
         export LD="${TOOLCHAIN_BIN}/ld"
         export RANLIB="${TOOLCHAIN_BIN}/llvm-ranlib"
         export STRIP="${TOOLCHAIN_BIN}/llvm-strip"
-        export CFLAGS="--sysroot=$SYSROOT -O2 -fPIC" # 添加优化和 PIC
-        export CXXFLAGS="--sysroot=$SYSROOT -O2 -fPIC"
-        export LDFLAGS="--sysroot=$SYSROOT"
-        # 告诉 pkg-config 去哪里找 .pc 文件 (BoringSSL 可能不生成，但设置无害)
+        # CFLAGS CXXFLAGS 添加 -I 指向 BoringSSL 头文件
+        export CFLAGS="--sysroot=$SYSROOT -I${DEPS_INSTALL_DIR}/include -O2 -fPIC"
+        export CXXFLAGS="--sysroot=$SYSROOT -I${DEPS_INSTALL_DIR}/include -O2 -fPIC"
+        # LDFLAGS 添加 -L 指向 BoringSSL 库文件
+        export LDFLAGS="-L${DEPS_INSTALL_DIR}/lib --sysroot=$SYSROOT"
+        # LIBS 明确指定需要链接的库
+        export LIBS="-lssl -lcrypto"
         export PKG_CONFIG_PATH="$DEPS_INSTALL_DIR/lib/pkgconfig"
         # --- 环境变量设置结束 ---
 
         echo ">>> 运行 libcurl 的 ./configure..."
-        # 运行 autogen (如果需要，通常从 git clone 下来需要)
         ./buildconf --force
 
         ./configure --host="$HOST_TRIPLET" \
             --prefix="$DEPS_INSTALL_DIR" \
-            --with-ssl="$DEPS_INSTALL_DIR" `# 指向 BoringSSL 安装目录` \
+            --with-ssl="$DEPS_INSTALL_DIR" \
             --enable-static \
             --disable-shared \
-            --disable-ldap \
-            --disable-ldaps \
-            --disable-manual \
-            --disable-verbose \
-            --disable-crypto-auth \
-            --disable-ftp \
-            --disable-file \
-            --disable-telnet \
-            --disable-tftp \
-            --disable-dict \
-            --disable-imap \
-            --disable-mqtt \
-            --disable-pop3 \
-            --disable-rtsp \
-            --disable-smb \
-            --disable-smtp \
-            --disable-gopher \
+            --disable-ldap --disable-ldaps \
+            --disable-manual --disable-verbose \
+            --disable-ftp --disable-file --disable-telnet --disable-tftp \
+            --disable-dict --disable-imap --disable-mqtt --disable-pop3 \
+            --disable-rtsp --disable-smb --disable-smtp --disable-gopher \
             --disable-websockets \
-            --disable-tests \
-            --without-zlib `# 如果 NDK sysroot 中没有，可以禁用` \
-            --without-brotli \
-            --without-zstd \
+            --without-zlib --without-brotli --without-zstd \
             --without-libidn2 \
             --with-ca-path=/system/etc/security/cacerts \
              || { echo "./configure 失败"; exit 1; }
@@ -201,7 +186,7 @@ jobs:
 
         # --- 步骤 5: 编译 llama.cpp ---
         echo ">>> 步骤 5: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+BoringSSL)..."
-        # (代码与之前版本相同, 仍然使用 CMake 和 CMAKE_PREFIX_PATH)
+        # (代码与之前版本相同)
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
@@ -219,7 +204,7 @@ jobs:
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" # <-- CMake 应该能在这里找到 libcurl
+          -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR"
 
         echo ">>> 开始编译 llama.cpp..."
         ninja || { echo "llama.cpp 编译失败"; exit 1; }
