@@ -1,0 +1,156 @@
+name: Daily Build and Release llama.cpp for Android (Qualcomm Adreno OpenCL)
+
+on:
+  schedule:
+    # CRON 语法：每天 UTC 时间 20:00 (北京时间次日凌晨 4:00)
+    - cron: '0 20 * * *'
+  workflow_dispatch: # 保留手动触发选项
+
+jobs:
+  build_and_release_daily:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 允许创建/更新 Release
+
+    steps:
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip
+
+    - name: Create and Run Build Script
+      # 包含 NDK 安装、依赖准备、克隆最新 llama.cpp 和编译的完整脚本
+      run: |
+        cat << 'EOF' > $HOME/build_android_opencl.sh
+        #!/bin/bash
+        set -e # 如果任何命令失败则退出
+
+        # 配置
+        NDK_VERSION="26.3.11579264"
+        NDK_BASE_PATH="$HOME/android-sdk"
+        export NDK_PATH="$NDK_BASE_PATH/ndk/$NDK_VERSION"
+        ANDROID_ABI="arm64-v8a"
+        ICD_LOADER_ANDROID_PLATFORM="24"
+        LLAMA_CPP_ANDROID_PLATFORM="android-28"
+        DEV_DIR="$HOME/dev/llm"
+
+        echo ">>> 步骤 1: 安装 Android NDK ${NDK_VERSION}..."
+        if [ -d "$NDK_PATH" ]; then
+            echo "NDK 目录已存在，跳过下载和安装。"
+        else
+            mkdir -p "$NDK_BASE_PATH/cmdline-tools"
+            cd "$HOME" || exit 1
+            wget https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip && \
+            unzip commandlinetools-linux-8512546_latest.zip && \
+            mv cmdline-tools latest && \
+            mv latest "$NDK_BASE_PATH/cmdline-tools/" && \
+            rm -rf commandlinetools-linux-8512546_latest.zip
+
+            SDKMANAGER="$NDK_BASE_PATH/cmdline-tools/latest/bin/sdkmanager"
+            if [ ! -f "$SDKMANAGER" ]; then echo "错误：未找到 sdkmanager at $SDKMANAGER"; exit 1; fi
+            echo "y" | "$SDKMANAGER" --sdk_root="$NDK_BASE_PATH" "ndk;${NDK_VERSION}" || { echo "NDK 安装失败"; exit 1; }
+        fi
+        if [ ! -d "$NDK_PATH/build/cmake" ]; then echo "错误：NDK 安装后未找到预期的目录"; exit 1; fi
+        echo "NDK 路径设置为: $NDK_PATH"
+
+        echo ">>> 步骤 2: 安装 OpenCL 头文件和 ICD Loader..."
+        mkdir -p "$DEV_DIR"
+        cd "$DEV_DIR" || exit 1
+
+        echo ">>> 2.1: 安装 OpenCL 头文件..."
+        OPENCL_HEADERS_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+        if [ ! -d "$OPENCL_HEADERS_TARGET_DIR/CL" ]; then
+            git clone https://github.com/KhronosGroup/OpenCL-Headers.git OpenCL-Headers-tmp && \
+            cp -r OpenCL-Headers-tmp/CL "$OPENCL_HEADERS_TARGET_DIR/" && \
+            rm -rf OpenCL-Headers-tmp
+            echo "OpenCL 头文件已复制。"
+        else
+            echo "OpenCL 头文件似乎已存在，跳过。"
+        fi
+
+        echo ">>> 2.2: 编译并安装 OpenCL ICD Loader for Android..."
+        OPENCL_LIB_TARGET_DIR="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
+        OPENCL_LIB_TARGET_FILE="$OPENCL_LIB_TARGET_DIR/libOpenCL.so"
+        if [ ! -f "$OPENCL_LIB_TARGET_FILE" ]; then
+            git clone https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
+            cd OpenCL-ICD-Loader || exit 1
+            mkdir build_ndk26 && cd build_ndk26 || exit 1
+            cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
+              -DOPENCL_ICD_LOADER_HEADERS_DIR="$OPENCL_HEADERS_TARGET_DIR" \
+              -DANDROID_ABI="$ANDROID_ABI" \
+              -DANDROID_PLATFORM="$ICD_LOADER_ANDROID_PLATFORM" \
+              -DANDROID_STL=c++_shared
+            ninja || { echo "OpenCL ICD Loader 编译失败"; exit 1; }
+            mkdir -p "$OPENCL_LIB_TARGET_DIR"
+            cp libOpenCL.so "$OPENCL_LIB_TARGET_FILE" || { echo "复制 libOpenCL.so 失败"; exit 1; }
+            echo "OpenCL ICD Loader (libOpenCL.so) 已编译并复制。"
+            cd "$DEV_DIR" || exit 1
+        else
+            echo "libOpenCL.so 似乎已存在，跳过 ICD Loader 编译。"
+        fi
+
+        echo ">>> 步骤 3: 克隆最新 llama.cpp 并编译..."
+        if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
+        # 你可能需要修改这里，指向你自己的 fork 或者特定分支
+        git clone https://github.com/ggerganov/llama.cpp.git
+        cd llama.cpp || exit 1
+        # 获取当前 commit hash 用于 Release body
+        LATEST_COMMIT_HASH=$(git rev-parse --short HEAD)
+        echo "LATEST_COMMIT_HASH=${LATEST_COMMIT_HASH}" >> $GITHUB_ENV
+
+        mkdir -p build-android && cd build-android || exit 1
+
+        echo ">>> 配置 CMake for llama.cpp..."
+        cmake .. -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI="$ANDROID_ABI" \
+          -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DGGML_OPENCL=ON
+
+        echo ">>> 开始编译 llama.cpp..."
+        ninja || { echo "llama.cpp 编译失败"; exit 1; }
+
+        echo ">>> llama.cpp 编译成功!"
+        echo "可执行文件位于：$(pwd)/bin"
+        echo "LLAMA_BIN_PATH=$(pwd)/bin" >> $GITHUB_ENV
+
+        exit 0
+        EOF
+
+        chmod +x $HOME/build_android_opencl.sh
+        echo "运行编译脚本..."
+        $HOME/build_android_opencl.sh
+
+    - name: Package Binaries
+      run: |
+        # 使用日期 YYYY-MM-DD 格式
+        TODAY=$(date +%Y-%m-%d)
+        echo "TODAY_DATE=${TODAY}" >> $GITHUB_ENV # 将日期存入环境变量
+        ARTIFACT_NAME="llama-android-opencl-${TODAY}"
+        echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
+        cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
+        zip -r "${ARTIFACT_NAME}.zip" ./*
+        echo "打包完成: ${ARTIFACT_NAME}.zip"
+        echo "ARTIFACT_ZIP_PATH=${PWD}/${ARTIFACT_NAME}.zip" >> $GITHUB_ENV
+        echo "ARTIFACT_ZIP_NAME=${ARTIFACT_NAME}.zip" >> $GITHUB_ENV
+
+    - name: Create or Update GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        # 使用固定的、更具体的标签名
+        tag_name: daily-android-opencl-adreno
+        # 更新 Release 名称，包含日期和目标硬件
+        name: "Daily llama.cpp Build for Android (Qualcomm Adreno OpenCL) - ${{ env.TODAY_DATE }}"
+        # 更新 Release Body，强调兼容性要求和构建信息
+        body: |
+          **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
+
+          Automatic daily build triggered on ${{ env.TODAY_DATE }}.
+          Compiled from llama.cpp commit: `${{ env.LATEST_COMMIT_HASH }}`
+          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`).
+        files: ${{ env.ARTIFACT_ZIP_PATH }}
+        fail_on_unmatched_files: true
+        # draft: false
+        prerelease: true # 标记为预发布可能更合适，因为是每日构建
