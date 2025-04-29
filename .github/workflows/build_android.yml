@@ -19,7 +19,7 @@ jobs:
         sudo apt-get install -y ninja-build cmake git wget unzip ca-certificates zip pkg-config python3 make build-essential
 
     - name: Create and Run Build Script
-      # 更新：为 mbedTLS 添加更多 git submodule 调试步骤
+      # 更新：为 libcurl 的 CMake 添加 mbedTLS 具体路径变量
       run: |
         cat << 'EOF' > $HOME/build_android_opencl.sh
         #!/bin/bash
@@ -97,29 +97,18 @@ jobs:
 
         # --- 步骤 3: 交叉编译 mbed TLS for Android ---
         echo ">>> 步骤 3: 交叉编译 mbed TLS for Android..."
+        # (代码与之前成功编译并安装的版本相同)
         mkdir -p "$DEPS_INSTALL_DIR"
         cd "$DEV_DIR" || exit 1
         if [ ! -d "mbedtls" ]; then
             git clone --depth 1 --branch v3.6.0 https://github.com/Mbed-TLS/mbedtls.git
         fi
         cd mbedtls || exit 1
-
-        # --- 新增：子模块更新调试 ---
-        echo ">>> 检查 mbedTLS 子模块..."
-        echo "--- Checking .gitmodules ---"
-        ls -l .gitmodules || echo ".gitmodules not found!"
         echo ">>> 初始化 mbedTLS 子模块..."
         git submodule update --init --recursive || { echo "mbedTLS 子模块更新失败"; exit 1; }
-        echo ">>> 检查子模块状态..."
-        git submodule status || echo "无法获取子模块状态"
-        echo ">>> 列出当前目录内容以确认 framework 目录..."
-        ls -l
-        echo ">>> 子模块检查/更新完成。"
-        # --- 子模块调试结束 ---
-
+        echo ">>> 子模块初始化完成。"
         if [ -d "build" ]; then rm -rf build; fi
         mkdir build && cd build || exit 1
-        # 配置 CMake for mbed TLS
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -140,7 +129,6 @@ jobs:
 
         # --- 步骤 4: 交叉编译 libcurl for Android (with mbed TLS) ---
         echo ">>> 步骤 4: 交叉编译 libcurl for Android (with mbed TLS)..."
-        # (代码与之前版本相同)
         cd "$DEV_DIR" || exit 1
         if [ ! -d "curl" ]; then
             git clone --depth 1 --branch curl-8_8_0 https://github.com/curl/curl.git
@@ -148,6 +136,7 @@ jobs:
         cd curl || exit 1
         if [ -d "build-android" ]; then rm -rf build-android; fi
         mkdir -p build-android && cd build-android || exit 1
+        # 配置 CMake for libcurl (显式设置 mbedTLS 路径变量)
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
           -DANDROID_ABI="$ANDROID_ABI" \
@@ -162,7 +151,11 @@ jobs:
           -DENABLE_MANUAL=OFF \
           -DCURL_CA_PATH=/system/etc/security/cacerts \
           -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
-          -DCURL_USE_MBEDTLS=ON
+          -DCURL_USE_MBEDTLS=ON \
+          -DMBEDTLS_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" `# 新增` \
+          -DMBEDTLS_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedtls.a" `# 新增` \
+          -DMBEDX509_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedx509.a" `# 新增` \
+          -DMBEDCRYPTO_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedcrypto.a" `# 新增`
 
         echo ">>> 开始编译 libcurl (with mbed TLS) for Android..."
         ninja || { echo "libcurl 编译失败"; exit 1; }
