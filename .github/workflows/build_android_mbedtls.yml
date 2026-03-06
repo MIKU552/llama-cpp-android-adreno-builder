@@ -158,7 +158,7 @@ jobs:
         cd "$DEV_DIR" || exit 1
 
         # --- 步骤 5: 编译 llama.cpp ---
-        echo ">>> 步骤 5: 克隆最新 llama.cpp 并编译 (链接自编译的 libcurl+mbedTLS)..."
+        echo ">>> 步骤 5: 克隆最新 llama.cpp 并编译..."
         if [ -d "llama.cpp" ]; then rm -rf llama.cpp; fi
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp || exit 1
@@ -171,6 +171,9 @@ jobs:
 
         MBEDTLS_LINK_FLAGS="-L${DEPS_INSTALL_DIR}/lib -lmbedtls -lmbedx509 -lmbedcrypto -ldl -lz"
         
+        # CPU 极限性能优化参数 (ARMv9 + dotprod + i8mm + sve)
+        OPT_FLAGS="-fopenmp -static-openmp -Wno-unused-command-line-argument -march=armv9-a+dotprod+i8mm+sve"
+
         echo ">>> 配置 CMake for llama.cpp (使用自编译的依赖)..."
         cmake .. -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
@@ -178,8 +181,9 @@ jobs:
           -DANDROID_PLATFORM="$LLAMA_CPP_ANDROID_PLATFORM" \
           -DBUILD_SHARED_LIBS=OFF \
           -DGGML_OPENCL=ON \
-          -DCMAKE_C_FLAGS="-fopenmp -static-openmp -Wno-unused-command-line-argument" \
-          -DCMAKE_CXX_FLAGS="-fopenmp -static-openmp -Wno-unused-command-line-argument" \
+          -DGGML_CPU_KLEIDIAI=ON \
+          -DCMAKE_C_FLAGS="${OPT_FLAGS}" \
+          -DCMAKE_CXX_FLAGS="${OPT_FLAGS}" \
           -DCURL_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" \
           -DCURL_LIBRARY="$DEPS_INSTALL_DIR/lib/libcurl.a" \
           -DCMAKE_EXE_LINKER_FLAGS="${MBEDTLS_LINK_FLAGS}" \
@@ -202,11 +206,9 @@ jobs:
 
     - name: Package Binaries
       run: |
-        # 获取具体的编译时间，格式如 2024-05-20_14-30-00
         BUILD_TIME=$(date +'%Y-%m-%d_%H-%M-%S')
         echo "BUILD_TIME=${BUILD_TIME}" >> $GITHUB_ENV
         
-        # 将压缩包名字加上具体时间戳
         ARTIFACT_NAME="llama-android-opencl-mbedtls-${BUILD_TIME}"
         echo "准备打包目录: ${{ env.LLAMA_BIN_PATH }}"
         cd "${{ env.LLAMA_BIN_PATH }}" || exit 1
@@ -223,12 +225,9 @@ jobs:
         body: |
           **Requires Android device with compatible Qualcomm Adreno GPU and OpenCL support (e.g., Snapdragon 8 Gen 1/2/3/Elite).**
 
-          Automatic daily build (or manually triggered).
-          - **Build Date & Time:** ${{ env.BUILD_TIME }} (UTC)
-          - **llama.cpp Commit:** `${{ env.LATEST_COMMIT_HASH }}`
-
-          Binaries are for Android arm64-v8a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). 
-          **Includes statically linked libcurl (v8.18.0) with mbedTLS (v4.0.0) support.**
+          Automatic daily build triggered on ${{ env.BUILD_TIME }} (UTC).
+          Compiled from llama.cpp commit: `${{ env.LATEST_COMMIT_HASH }}`
+          Binaries are for Android arm64-v8a and arm64-v9a with Adreno OpenCL backend enabled (`-DGGML_OPENCL=ON`). **Includes statically linked libcurl with mbedTLS support.**
         files: ${{ env.ARTIFACT_ZIP_PATH }}
         fail_on_unmatched_files: true
         draft: false
