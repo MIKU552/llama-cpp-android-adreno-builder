@@ -144,7 +144,8 @@ jobs:
           -DCURL_CA_PATH=/system/etc/security/cacerts \
           -DCMAKE_PREFIX_PATH="$DEPS_INSTALL_DIR" \
           -DCURL_USE_MBEDTLS=ON \
-          -DMBEDTLS_INCLUDE_DIRS="$DEPS_INSTALL_DIR/include" \
+          -DCURL_USE_LIBPSL=OFF \
+          -DMBEDTLS_INCLUDE_DIR="$DEPS_INSTALL_DIR/include" \
           -DMBEDTLS_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedtls.a" \
           -DMBEDX509_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedx509.a" \
           -DMBEDCRYPTO_LIBRARY="$DEPS_INSTALL_DIR/lib/libmbedcrypto.a"
